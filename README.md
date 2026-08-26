@@ -127,9 +127,9 @@ mutation, arbitrary execution, or release methods. This excludes `install`,
 ## Development
 
 ```bash
-~/.swamp/deno/deno fmt --check models/*.ts
-~/.swamp/deno/deno check models/project.ts models/project_test.ts
-~/.swamp/deno/deno test --allow-env --allow-read --allow-write --allow-run models/project_test.ts
+~/.swamp/deno/deno fmt --check project.ts project_test.ts
+~/.swamp/deno/deno check project.ts project_test.ts
+~/.swamp/deno/deno test --allow-env --allow-read --allow-write --allow-run project_test.ts
 swamp doctor extensions --json
 swamp extension push manifest.yaml --dry-run
 ```

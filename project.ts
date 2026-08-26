@@ -2,7 +2,6 @@
 import { z } from "npm:zod@4";
 import { satisfies, valid } from "npm:semver@7.7.2";
 
-const VERSION = "2026.08.26.1";
 const MAX_CAPTURE_BYTES = 64 * 1024 * 1024;
 
 const ProjectArgumentsSchema = z.object({
@@ -980,7 +979,19 @@ async function executeWithEvidence(
 /** npm project model. */
 export const model = {
   type: "@funsaized/npm/project",
-  version: VERSION,
+  version: "2026.08.26.3",
+  upgrades: [
+    {
+      toVersion: "2026.08.26.2",
+      description: "Version bump, no schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.08.26.3",
+      description: "Version bump, no schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+  ],
   globalArguments: ProjectArgumentsSchema,
   resources: {
     project: {

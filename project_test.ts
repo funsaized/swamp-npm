@@ -49,7 +49,7 @@ async function copyDirectory(source: string, destination: string) {
 
 async function fixture(name: string) {
   const root = await Deno.makeTempDir({ prefix: `swamp-npm-${name}-` });
-  const source = new URL(`../fixtures/${name}`, import.meta.url).pathname;
+  const source = new URL(`./fixtures/${name}`, import.meta.url).pathname;
   await copyDirectory(source, root);
   return root;
 }
@@ -95,7 +95,7 @@ function testContext(
       projectDir: overrides.projectDir ?? ".",
       expectedNpmVersion: "expectedNpmVersion" in overrides
         ? overrides.expectedNpmVersion
-        : "11.17.0",
+        : "11.19.0",
       expectedNodeVersion: "expectedNodeVersion" in overrides
         ? overrides.expectedNodeVersion
         : ">=24",
@@ -687,7 +687,7 @@ Deno.test("audit findings persist before policy failure", async () => {
     `#!/usr/bin/env node
 const args = process.argv.slice(2);
 if (args[0] === "--version") {
-  console.log("11.17.0");
+  console.log("11.19.0");
 } else if (args[0] === "audit") {
   console.log(JSON.stringify({
     vulnerabilities: {
