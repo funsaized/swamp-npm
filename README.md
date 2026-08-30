@@ -31,9 +31,17 @@ globalArguments:
 
 ## Why Use This
 
-Every method is a typed, evidence-producing operation, not a shell wrapper. Swamp calls `node`, `npm`, and read-only `git` with fixed argv, so the command line is fully reproducible. Every invocation records toolchain, lockfile, package.json, git head, and exit state before the workflow decides to fail or continue.
+Agents can invoke npm easily. The harder problem is proving what ran while
+preventing unbounded or unintended actions.
 
-Use it when you want a deterministic build that an agent can drive without escaping into `command/shell`. Skip it when you need lifecycle scripts, dependency mutation, or registry writes; those are intentionally absent.
+This extension exposes common npm operations as typed, policy-bound methods.
+It validates inputs, isolates npm configuration, limits output, and redacts
+secrets. Exact toolchain, manifest, lockfile, and Git identities accompany each
+run. Successes and failures both leave durable evidence for review or replay.
+
+Use it when agents need deterministic builds without escaping into
+`command/shell`. Dependency mutation, arbitrary execution, and registry writes
+remain intentionally unavailable.
 
 ## Toolchain Policy
 
