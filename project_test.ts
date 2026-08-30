@@ -77,6 +77,7 @@ function testContext(
     projectDir: string;
     lifecycleScripts: "deny" | "allow";
     allowedScripts: string[];
+    allowedRebuildPackages: string[];
     environment: Record<string, string>;
     defaultTimeoutMs: number;
     requireCleanGit: boolean;
@@ -103,6 +104,7 @@ function testContext(
       configPolicy: "project" as const,
       lifecycleScripts: overrides.lifecycleScripts ?? "deny",
       allowedScripts: overrides.allowedScripts ?? [],
+      allowedRebuildPackages: overrides.allowedRebuildPackages ?? [],
       environment: overrides.environment ?? {},
       defaultTimeoutMs: overrides.defaultTimeoutMs ?? 30_000,
       requireCleanGit: overrides.requireCleanGit ?? false,
@@ -132,6 +134,10 @@ function testContext(
         },
         writeText(value: string) {
           text = value;
+          return Promise.resolve(persist());
+        },
+        writeAll(value: Uint8Array) {
+          text = new TextDecoder().decode(value);
           return Promise.resolve(persist());
         },
         finalize() {
@@ -465,6 +471,7 @@ Deno.test("list persists raw JSON and a normalized dependency tree", async () =>
     await model.methods.list.execute({
       ...workspaceDefaults,
       all: true,
+      failOnProblems: false,
     }, context);
     assert(
       resources.some((item) => item.specName === "dependencyTree"),
@@ -743,6 +750,183 @@ if (args[0] === "--version") {
   } finally {
     await Deno.remove(root, { recursive: true });
   }
+});
+
+Deno.test("sbom persists bounded normalized and raw evidence", async () => {
+  const root = await fixture("basic");
+  try {
+    const { context, resources, files } = testContext(root);
+    await model.methods.sbom.execute({
+      ...workspaceDefaults,
+      format: "cyclonedx",
+      omit: [],
+      include: [],
+      failOnMissing: false,
+      maxComponents: 100,
+    }, context);
+    const sbom = resources.find((item) => item.specName === "sbom");
+    assert(sbom?.data.format === "cyclonedx", "SBOM format missing");
+    assert(sbom.data.componentCount === 1, "SBOM root component missing");
+    assert(sbom.data.truncated === false, "Small SBOM was truncated");
+    assert(
+      files.some((item) => item.specName === "rawJson"),
+      "Raw SBOM missing",
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("pack previews by default and can persist a bounded tarball", async () => {
+  for (const dryRun of [true, false]) {
+    const root = await fixture("basic");
+    try {
+      if (!dryRun) {
+        const packageJson = JSON.parse(
+          await Deno.readTextFile(`${root}/package.json`),
+        );
+        packageJson.name = "@fixture/scoped";
+        await Deno.writeTextFile(
+          `${root}/package.json`,
+          `${JSON.stringify(packageJson, null, 2)}\n`,
+        );
+      }
+      const { context, resources, files } = testContext(root);
+      await model.methods.pack.execute({
+        ...workspaceDefaults,
+        dryRun,
+        maxArtifactBytes: 1024 * 1024,
+      }, context);
+      const result = resources.find((item) => item.specName === "packResult");
+      assert(result?.data.dryRun === dryRun, "Pack mode was not recorded");
+      assert(
+        files.some((item) => item.specName === "packageArtifact") === !dryRun,
+        "Pack artifact did not match dry-run mode",
+      );
+      assert(
+        files.every((item) => !item.name.includes("/")),
+        "Scoped package created an unsafe file instance name",
+      );
+      assert(
+        dryRun || typeof result.data.artifactSha256 === "string",
+        "Pack artifact hash missing",
+      );
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  }
+});
+
+Deno.test("rebuild requires and records an explicit package allowlist", async () => {
+  const denied = await fixture("lifecycle-script");
+  const allowed = await fixture("lifecycle-script");
+  try {
+    const ciArgs = {
+      ...workspaceDefaults,
+      omit: [],
+      include: [],
+      strictPeerDeps: false,
+      dryRun: false,
+    };
+    await model.methods.ci.execute(ciArgs, testContext(denied).context);
+    const deniedContext = testContext(denied);
+    await rejects(
+      () =>
+        model.methods.rebuild.execute({
+          ...workspaceDefaults,
+          packages: ["fixture-dependency"],
+        }, deniedContext.context),
+      "allowedRebuildPackages",
+    );
+    assert(
+      deniedContext.resources.some((item) =>
+        item.specName === "invocation" && item.data.executionStatus === "failed"
+      ),
+      "Denied rebuild evidence missing",
+    );
+
+    await model.methods.ci.execute(ciArgs, testContext(allowed).context);
+    const allowedContext = testContext(allowed, {
+      allowedRebuildPackages: ["fixture-dependency"],
+    });
+    await model.methods.rebuild.execute({
+      ...workspaceDefaults,
+      packages: ["fixture-dependency"],
+    }, allowedContext.context);
+    const invocation = allowedContext.resources.find((item) =>
+      item.specName === "invocation"
+    );
+    assert(
+      JSON.stringify(invocation?.data.authorizedRebuildPackages) ===
+        '["fixture-dependency"]',
+      "Rebuild authorization evidence missing",
+    );
+  } finally {
+    await Deno.remove(denied, { recursive: true });
+    await Deno.remove(allowed, { recursive: true });
+  }
+});
+
+Deno.test("query persists results before count policy failure", async () => {
+  const root = await fixture("basic");
+  try {
+    const { context, resources, files } = testContext(root);
+    await rejects(
+      () =>
+        model.methods.query.execute({
+          selector: ":root",
+          failOnMatches: true,
+          maxResults: 10,
+        }, context),
+      "results failed policy",
+    );
+    const result = resources.find((item) => item.specName === "queryResult");
+    assert(result?.data.matchCount === 1, "Query match count missing");
+    assert(result.data.policyStatus === "failed", "Query policy did not fail");
+    assert(
+      files.some((item) => item.specName === "rawJson"),
+      "Raw query JSON missing",
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("SBOM and query normalization report truncation honestly", () => {
+  const sbom = testing.normalizeSbom(
+    {
+      spdxVersion: "SPDX-2.3",
+      packages: [
+        {
+          name: "one",
+          versionInfo: "1.0.0",
+          externalRefs: [{
+            referenceType: "purl",
+            referenceLocator: "pkg:npm/one@1.0.0",
+          }],
+          licenseDeclared: "MIT",
+        },
+        {
+          name: "two",
+          versionInfo: "2.0.0",
+          externalRefs: [{
+            referenceType: "purl",
+            referenceLocator: "pkg:npm/two@2.0.0",
+          }],
+        },
+      ],
+    },
+    "spdx",
+    1,
+  );
+  assert(sbom.componentCount === 2, "SPDX component count is wrong");
+  assert(sbom.components.length === 1, "SPDX result was not bounded");
+  assert(sbom.truncated, "SPDX truncation was not reported");
+
+  const query = testing.normalizeQuery([{}, {}], 1);
+  assert(query.matchCount === 2, "Query match count is wrong");
+  assert(query.matches.length === 1, "Query result was not bounded");
+  assert(query.truncated, "Query truncation was not reported");
 });
 
 async function fileExists(path: string) {

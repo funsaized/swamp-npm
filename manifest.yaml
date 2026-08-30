@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@funsaized/npm"
-version: "2026.08.26.3"
+version: "2026.08.30.1"
 description: "Typed, reproducible npm project operations"
 repository: "https://github.com/funsaized/swamp-npm"
 
@@ -9,6 +9,14 @@ paths:
 
 models:
   - project.ts
+workflows:
+  - workflow-npm-verify.yaml
+reports:
+  - invocation.ts
+  - audit_findings.ts
+  - sbom_summary.ts
+skills:
+  - swamp-npm
 
 additionalFiles:
   - README.md

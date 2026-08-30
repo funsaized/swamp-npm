@@ -23,6 +23,7 @@ globalArguments:
   allowedScripts:
     - check
     - build
+  allowedRebuildPackages: []
   environment: {}
   defaultTimeoutMs: 900000
   requireCleanGit: true
@@ -58,12 +59,41 @@ scripts; the choice is recorded in every invocation.
 | `inspect` | Records package metadata, scripts, workspaces, lockfile state, configuration hashes, tool versions, lifecycle policy, and optional Git head. |
 | `ci`      | Requires a lockfile and runs reproducible `npm ci`; supports omit/include, install strategy, strict peers, dry-run, workspace selection, and exact Git head. |
 | `run`     | Runs an existing package script, enforcing `allowedScripts` when configured. Arguments are passed as argv after `--`. |
-| `list`    | Stores redacted raw `npm ls --json` output and a normalized dependency tree. |
+| `list`    | Stores redacted raw `npm ls --json` output and a normalized dependency tree; can fail on reported dependency problems. |
 | `audit`   | Stores redacted raw `npm audit --json` output and separately records execution, findings, and policy status before failing policy. |
+| `sbom`    | Stores raw and bounded normalized CycloneDX or SPDX output, with an optional completeness gate. |
+| `query`   | Runs one bounded npm dependency selector and can enforce match-count policy. |
+| `rebuild` | Runs install scripts only for requested packages present in `allowedRebuildPackages`. |
+| `pack`    | Previews one package by default, or stores a size-bounded tarball and SHA-256 without registry mutation. |
 
 All methods accept `expectedGitHead` so evidence can be tied to a reviewed
 commit. Workspace-capable methods accept `workspaces` and
 `includeWorkspaceRoot`.
+
+## Verify Workflow
+
+The bundled `@funsaized/npm/verify` workflow runs `inspect`, `ci`, `audit`,
+`sbom`, then `list` against one exact `expectedGitHead`. The steps are
+serialized because swamp locks each model during a method run.
+
+```bash
+swamp workflow run @funsaized/npm/verify \
+  --input model=my-project \
+  --input expectedGitHead=$(git rev-parse HEAD)
+```
+
+The extension also includes invocation, audit-findings, and SBOM-summary reports
+plus the `swamp-npm` agent skill.
+
+## Artifacts And Rebuilds
+
+`pack` uses `--ignore-scripts` while lifecycle scripts are denied. A real pack
+requires `dryRun: false`; the resulting tarball is stored as Swamp file data and
+is never published. `maxArtifactBytes` bounds persisted artifact size.
+
+`rebuild` is the narrow exception for dependencies that require native install
+scripts. Every requested package must appear in `allowedRebuildPackages`; the
+authorization and argv are recorded in invocation evidence.
 
 ## Evidence And Failures
 
@@ -114,6 +144,7 @@ records the selection in invocation evidence.
 - Environment values and `.npmrc` contents are never persisted.
 - Processes honor cancellation and the configured timeout.
 - Logs stream to Swamp storage; captured command output is bounded at 64 MiB.
+- Query and SBOM resources are count-bounded; package artifacts are size-bounded.
 - Git head and clean tracked-worktree invariants are checked before and after
   execution when configured.
 
@@ -122,13 +153,15 @@ records the selection in invocation evidence.
 The extension intentionally does not expose package mutation, registry
 mutation, arbitrary execution, or release methods. This excludes `install`,
 `uninstall`, `update`, `dedupe`, `prune`, `audit_fix`, `outdated`, `exec`, all
-`pkg_*` methods, `version`, `pack`, and `publish`.
+`pkg_*` methods, `version`, and `publish`.
 
 ## Development
 
 ```bash
-~/.swamp/deno/deno fmt --check project.ts project_test.ts
-~/.swamp/deno/deno check project.ts project_test.ts
+~/.swamp/deno/deno fmt --check project.ts project_test.ts \
+  *_findings.ts *_summary.ts invocation.ts report_shared.ts
+~/.swamp/deno/deno check project.ts project_test.ts \
+  *_findings.ts *_summary.ts invocation.ts report_shared.ts
 ~/.swamp/deno/deno test --allow-env --allow-read --allow-write --allow-run project_test.ts
 swamp doctor extensions --json
 swamp extension push manifest.yaml --dry-run

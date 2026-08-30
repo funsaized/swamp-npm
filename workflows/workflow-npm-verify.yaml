@@ -1,0 +1,93 @@
+id: cf64f11c-d2d2-4902-baf9-17995d793ddc
+name: "@funsaized/npm/verify"
+description: Reproducibly install and verify an npm project at an exact Git commit
+tags:
+  npm: verify
+inputs:
+  properties:
+    model:
+      type: string
+      description: npm project model name or ID
+    expectedGitHead:
+      type: string
+      pattern: "^[0-9a-f]{40}$"
+      description: Exact reviewed Git commit to verify
+  required:
+    - model
+    - expectedGitHead
+jobs:
+  - name: verify
+    description: Inspect, install, audit, inventory, and generate an SBOM
+    steps:
+      - name: inspect
+        description: Bind project and toolchain identity to the reviewed commit
+        task:
+          type: model_method
+          modelIdOrName: ${{ inputs.model }}
+          methodName: inspect
+          inputs:
+            expectedGitHead: ${{ inputs.expectedGitHead }}
+        dependsOn: []
+        weight: 0
+        allowFailure: false
+      - name: ci
+        description: Restore the exact package-lock dependency tree
+        task:
+          type: model_method
+          modelIdOrName: ${{ inputs.model }}
+          methodName: ci
+          inputs:
+            expectedGitHead: ${{ inputs.expectedGitHead }}
+        dependsOn:
+          - step: inspect
+            condition:
+              type: succeeded
+        weight: 0
+        allowFailure: false
+      - name: audit
+        description: Apply the configured vulnerability policy
+        task:
+          type: model_method
+          modelIdOrName: ${{ inputs.model }}
+          methodName: audit
+          inputs:
+            expectedGitHead: ${{ inputs.expectedGitHead }}
+        dependsOn:
+          - step: ci
+            condition:
+              type: succeeded
+        weight: 0
+        allowFailure: false
+      - name: sbom
+        description: Produce CycloneDX dependency evidence
+        task:
+          type: model_method
+          modelIdOrName: ${{ inputs.model }}
+          methodName: sbom
+          inputs:
+            expectedGitHead: ${{ inputs.expectedGitHead }}
+            failOnMissing: true
+        dependsOn:
+          - step: audit
+            condition:
+              type: succeeded
+        weight: 0
+        allowFailure: false
+      - name: list
+        description: Record the normalized installed dependency tree
+        task:
+          type: model_method
+          modelIdOrName: ${{ inputs.model }}
+          methodName: list
+          inputs:
+            expectedGitHead: ${{ inputs.expectedGitHead }}
+            failOnProblems: true
+        dependsOn:
+          - step: sbom
+            condition:
+              type: succeeded
+        weight: 0
+        allowFailure: false
+    dependsOn: []
+    weight: 0
+version: 1

@@ -12,6 +12,7 @@ const ProjectArgumentsSchema = z.object({
   configPolicy: z.literal("project").default("project"),
   lifecycleScripts: z.enum(["deny", "allow"]).default("deny"),
   allowedScripts: z.array(z.string()).default([]),
+  allowedRebuildPackages: z.array(z.string()).default([]),
   environment: z.record(z.string(), z.string()).meta({ sensitive: true })
     .default({}),
   defaultTimeoutMs: z.number().int().positive().default(900_000),
@@ -44,7 +45,17 @@ const ProjectSnapshotSchema = z.object({
 });
 
 const InvocationSchema = z.object({
-  operation: z.enum(["inspect", "ci", "run", "list", "audit"]),
+  operation: z.enum([
+    "inspect",
+    "ci",
+    "run",
+    "list",
+    "audit",
+    "sbom",
+    "pack",
+    "rebuild",
+    "query",
+  ]),
   argv: z.array(z.string()),
   projectDir: z.string(),
   startedAt: z.iso.datetime(),
@@ -59,6 +70,7 @@ const InvocationSchema = z.object({
   workspaces: z.array(z.string()),
   lifecyclePolicy: z.enum(["deny", "allow"]),
   environmentKeys: z.array(z.string()),
+  authorizedRebuildPackages: z.array(z.string()).default([]),
   expectedGitHead: z.string().nullable(),
   packageJsonSha256Before: z.string().nullable(),
   packageJsonSha256After: z.string().nullable(),
@@ -122,12 +134,66 @@ const AuditReportSchema = z.object({
   recordedAt: z.iso.datetime(),
 });
 
+const SbomComponentSchema = z.object({
+  name: z.string(),
+  version: z.string().nullable(),
+  purl: z.string().nullable(),
+  licenses: z.array(z.string()),
+});
+
+const SbomSchema = z.object({
+  format: z.enum(["cyclonedx", "spdx"]),
+  specVersion: z.string().nullable(),
+  componentCount: z.number().int().nonnegative(),
+  dependencyCount: z.number().int().nonnegative(),
+  missingRequiredFields: z.array(z.string()),
+  components: z.array(SbomComponentSchema),
+  truncated: z.boolean(),
+  policyStatus: z.enum(["passed", "failed"]),
+  recordedAt: z.iso.datetime(),
+});
+
+const PackResultSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  version: z.string(),
+  filename: z.string(),
+  size: z.number().int().nonnegative(),
+  unpackedSize: z.number().int().nonnegative(),
+  shasum: z.string(),
+  integrity: z.string(),
+  entryCount: z.number().int().nonnegative(),
+  bundled: z.array(z.string()),
+  dryRun: z.boolean(),
+  artifactSha256: z.string().nullable(),
+  recordedAt: z.iso.datetime(),
+});
+
+const QueryMatchSchema = z.object({
+  name: z.string().nullable(),
+  version: z.string().nullable(),
+  location: z.string().nullable(),
+  dev: z.boolean(),
+  optional: z.boolean(),
+  peer: z.boolean(),
+  inBundle: z.boolean(),
+});
+
+const QueryResultSchema = z.object({
+  selector: z.string(),
+  matchCount: z.number().int().nonnegative(),
+  matches: z.array(QueryMatchSchema),
+  truncated: z.boolean(),
+  policyStatus: z.enum(["passed", "failed"]),
+  recordedAt: z.iso.datetime(),
+});
+
 const InspectArgsSchema = z.object({
   expectedGitHead: z.string().regex(/^[0-9a-f]{40}$/).optional(),
 });
 
 const CiArgsSchema = WorkspaceSchema.extend({
-  omit: z.array(z.enum(["dev", "optional", "peer", "prod"])).default([]),
+  omit: z.array(z.enum(["dev", "optional", "peer"])).default([]),
   include: z.array(z.enum(["dev", "optional", "peer", "prod"])).default([]),
   installStrategy: z.enum(["hoisted", "nested", "shallow", "linked"])
     .optional(),
@@ -149,6 +215,7 @@ const ListArgsSchema = WorkspaceSchema.extend({
   }).optional(),
   depth: z.number().int().nonnegative().optional(),
   all: z.boolean().default(false),
+  failOnProblems: z.boolean().default(false),
   expectedGitHead: z.string().regex(/^[0-9a-f]{40}$/).optional(),
 });
 
@@ -161,11 +228,52 @@ const AuditArgsSchema = WorkspaceSchema.extend({
   expectedGitHead: z.string().regex(/^[0-9a-f]{40}$/).optional(),
 });
 
+const SbomArgsSchema = WorkspaceSchema.extend({
+  format: z.enum(["cyclonedx", "spdx"]).default("cyclonedx"),
+  omit: z.array(z.enum(["dev", "optional", "peer", "prod"])).default([]),
+  include: z.array(z.enum(["dev", "optional", "peer", "prod"])).default([]),
+  failOnMissing: z.boolean().default(false),
+  maxComponents: z.number().int().positive().max(100_000).default(10_000),
+  expectedGitHead: z.string().regex(/^[0-9a-f]{40}$/).optional(),
+});
+
+const PackArgsSchema = WorkspaceSchema.extend({
+  dryRun: z.boolean().default(true),
+  maxArtifactBytes: z.number().int().positive().default(512 * 1024 * 1024),
+  expectedGitHead: z.string().regex(/^[0-9a-f]{40}$/).optional(),
+}).refine(
+  (args) =>
+    args.workspaces.length <= 1 &&
+    !(args.workspaces.length === 1 && args.includeWorkspaceRoot),
+  { message: "pack must target exactly one package" },
+);
+
+const RebuildArgsSchema = WorkspaceSchema.extend({
+  packages: z.array(
+    z.string().min(1).refine((value) => !value.startsWith("-"), {
+      message: "package must not start with '-'",
+    }),
+  ).min(1),
+  expectedGitHead: z.string().regex(/^[0-9a-f]{40}$/).optional(),
+});
+
+const QueryArgsSchema = z.object({
+  selector: z.string().min(1).max(4_096).refine(
+    (value) => !value.startsWith("-"),
+    { message: "selector must not start with '-'" },
+  ),
+  failOnMatches: z.boolean().default(false),
+  minCount: z.number().int().nonnegative().optional(),
+  maxResults: z.number().int().positive().max(100_000).default(10_000),
+  expectedGitHead: z.string().regex(/^[0-9a-f]{40}$/).optional(),
+});
+
 type GlobalArgs = z.infer<typeof ProjectArgumentsSchema>;
 type Handle = { name: string };
 type FileWriter = {
   writeLine(line: string): Promise<void>;
   writeText(text: string): Promise<Handle>;
+  writeAll(content: Uint8Array): Promise<Handle>;
   finalize(): Promise<Handle>;
 };
 type Context = {
@@ -803,6 +911,116 @@ function normalizeAudit(value: unknown) {
   return { root, findings, counts };
 }
 
+function normalizeSbom(
+  value: unknown,
+  format: "cyclonedx" | "spdx",
+  maxComponents: number,
+) {
+  const root = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  const metadata = root.metadata && typeof root.metadata === "object" &&
+      !Array.isArray(root.metadata)
+    ? root.metadata as Record<string, unknown>
+    : {};
+  const rootComponent = metadata.component &&
+      typeof metadata.component === "object" &&
+      !Array.isArray(metadata.component)
+    ? [metadata.component]
+    : [];
+  const rawComponents = format === "cyclonedx"
+    ? [
+      ...rootComponent,
+      ...(Array.isArray(root.components) ? root.components : []),
+    ]
+    : (Array.isArray(root.packages) ? root.packages : []);
+  const missingRequiredFields: string[] = [];
+  const components = rawComponents.map((raw, index) => {
+    const item = raw && typeof raw === "object" && !Array.isArray(raw)
+      ? raw as Record<string, unknown>
+      : {};
+    const name = typeof item.name === "string" ? item.name : "";
+    const version = format === "cyclonedx"
+      ? (typeof item.version === "string" ? item.version : null)
+      : (typeof item.versionInfo === "string" ? item.versionInfo : null);
+    let purl = typeof item.purl === "string" ? item.purl : null;
+    if (format === "spdx" && Array.isArray(item.externalRefs)) {
+      const reference = item.externalRefs.find((entry) =>
+        entry && typeof entry === "object" &&
+        "referenceType" in entry && entry.referenceType === "purl" &&
+        "referenceLocator" in entry &&
+        typeof entry.referenceLocator === "string"
+      ) as Record<string, unknown> | undefined;
+      purl = typeof reference?.referenceLocator === "string"
+        ? reference.referenceLocator
+        : null;
+    }
+    const licenses = format === "cyclonedx" && Array.isArray(item.licenses)
+      ? item.licenses.flatMap((entry) => {
+        if (!entry || typeof entry !== "object") return [];
+        if ("expression" in entry && typeof entry.expression === "string") {
+          return [entry.expression];
+        }
+        if (
+          "license" in entry && entry.license &&
+          typeof entry.license === "object"
+        ) {
+          const license = entry.license as Record<string, unknown>;
+          const value = license.id ?? license.name;
+          return typeof value === "string" ? [value] : [];
+        }
+        return [];
+      })
+      : [item.licenseConcluded, item.licenseDeclared].filter(
+        (license): license is string =>
+          typeof license === "string" && license !== "NOASSERTION",
+      ).filter((license, index, all) => all.indexOf(license) === index);
+    const identity = name || `component[${index}]`;
+    if (!name) missingRequiredFields.push(`${identity}.name`);
+    if (!version) missingRequiredFields.push(`${identity}.version`);
+    if (!purl) missingRequiredFields.push(`${identity}.purl`);
+    return { name, version, purl, licenses };
+  });
+  const dependencyCount = format === "cyclonedx"
+    ? (Array.isArray(root.dependencies) ? root.dependencies.length : 0)
+    : (Array.isArray(root.relationships) ? root.relationships.length : 0);
+  const specVersion = format === "cyclonedx"
+    ? (typeof root.specVersion === "string" ? root.specVersion : null)
+    : (typeof root.spdxVersion === "string" ? root.spdxVersion : null);
+  return {
+    root,
+    specVersion,
+    componentCount: components.length,
+    dependencyCount,
+    missingRequiredFields,
+    components: components.slice(0, maxComponents),
+    truncated: components.length > maxComponents,
+  };
+}
+
+function normalizeQuery(value: unknown, maxResults: number) {
+  const rawMatches = Array.isArray(value) ? value : [];
+  const matches = rawMatches.map((raw) => {
+    const item = raw && typeof raw === "object" && !Array.isArray(raw)
+      ? raw as Record<string, unknown>
+      : {};
+    return {
+      name: typeof item.name === "string" ? item.name : null,
+      version: typeof item.version === "string" ? item.version : null,
+      location: typeof item.location === "string" ? item.location : null,
+      dev: item.dev === true,
+      optional: item.optional === true,
+      peer: item.peer === true,
+      inBundle: item.inBundle === true,
+    };
+  });
+  return {
+    matchCount: matches.length,
+    matches: matches.slice(0, maxResults),
+    truncated: matches.length > maxResults,
+  };
+}
+
 async function executeWithEvidence(
   operation: Evidence["operation"],
   expectedGitHead: string | undefined,
@@ -839,6 +1057,8 @@ async function executeWithEvidence(
     workspaces,
     lifecyclePolicy: context.globalArgs.lifecycleScripts,
     environmentKeys: Object.keys(context.globalArgs.environment).sort(),
+    authorizedRebuildPackages: context.globalArgs.allowedRebuildPackages.slice()
+      .sort(),
     expectedGitHead: expectedGitHead ?? null,
     packageJsonSha256Before: null,
     packageJsonSha256After: null,
@@ -979,7 +1199,7 @@ async function executeWithEvidence(
 /** npm project model. */
 export const model = {
   type: "@funsaized/npm/project",
-  version: "2026.08.26.3",
+  version: "2026.08.30.1",
   upgrades: [
     {
       toVersion: "2026.08.26.2",
@@ -989,6 +1209,11 @@ export const model = {
     {
       toVersion: "2026.08.26.3",
       description: "Version bump, no schema changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.08.30.1",
+      description: "Add delivery evidence methods and reports",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],
@@ -1019,6 +1244,24 @@ export const model = {
       lifetime: "infinite" as const,
       garbageCollection: 50,
     },
+    sbom: {
+      description: "Normalized software bill of materials and policy result",
+      schema: SbomSchema,
+      lifetime: "infinite" as const,
+      garbageCollection: 50,
+    },
+    packResult: {
+      description: "Dry-run or produced npm package artifact metadata",
+      schema: PackResultSchema,
+      lifetime: "infinite" as const,
+      garbageCollection: 50,
+    },
+    queryResult: {
+      description: "Bounded normalized npm dependency selector results",
+      schema: QueryResultSchema,
+      lifetime: "infinite" as const,
+      garbageCollection: 50,
+    },
   },
   files: {
     log: {
@@ -1034,8 +1277,19 @@ export const model = {
       lifetime: "infinite" as const,
       garbageCollection: 50,
     },
+    packageArtifact: {
+      description: "Packed npm tarball produced without registry mutation",
+      contentType: "application/gzip",
+      lifetime: "infinite" as const,
+      garbageCollection: 20,
+    },
   },
   checks: {},
+  reports: [
+    "@funsaized/npm/invocation",
+    { name: "@funsaized/npm/audit-findings", methods: ["audit"] },
+    { name: "@funsaized/npm/sbom-summary", methods: ["sbom"] },
+  ],
   methods: {
     inspect: {
       description:
@@ -1268,6 +1522,12 @@ export const model = {
             if (result.code !== 0) {
               throw new Error(`npm ls exited ${result.code}`);
             }
+            if (
+              args.failOnProblems && Array.isArray(parsed.problems) &&
+              parsed.problems.length > 0
+            ) {
+              throw new Error("npm ls problems failed policy");
+            }
             return [tree, rawHandle];
           },
         );
@@ -1383,6 +1643,361 @@ export const model = {
         );
       },
     },
+    sbom: {
+      description:
+        "Record a bounded CycloneDX or SPDX SBOM before applying completeness policy",
+      arguments: SbomArgsSchema,
+      execute: async (
+        args: z.infer<typeof SbomArgsSchema>,
+        context: Context,
+      ) => {
+        const argv = [
+          "sbom",
+          `--sbom-format=${args.format}`,
+          ...args.omit.map((value) => `--omit=${value}`),
+          ...args.include.map((value) => `--include=${value}`),
+          ...workspaceArgv(args),
+        ];
+        return await executeWithEvidence(
+          "sbom",
+          args.expectedGitHead,
+          args.workspaces,
+          ["npm", ...argv],
+          context,
+          async (prepared, log, evidence) => {
+            const result = await runProcess(
+              "npm",
+              argv,
+              prepared.project.dir,
+              prepared.env,
+              context.globalArgs.defaultTimeoutMs,
+              context.signal,
+              log,
+              prepared.secrets,
+            );
+            evidence.exitCode = result.code;
+            if (result.timedOut) throw new Error("npm sbom timed out");
+            if (result.captureTruncated) {
+              throw new Error("npm sbom JSON exceeded capture limit");
+            }
+            const raw = context.createFileWriter(
+              "rawJson",
+              `raw-sbom-${Date.now()}`,
+            );
+            const rawHandle = await raw.writeText(
+              result.stdout || result.stderr,
+            );
+            let parsed: unknown;
+            try {
+              parsed = JSON.parse(result.stdout);
+            } catch {
+              throw new Error(
+                result.launchError ?? "npm sbom did not return valid JSON",
+              );
+            }
+            if (result.code !== 0) {
+              throw new Error(`npm sbom exited ${result.code}`);
+            }
+            const normalized = normalizeSbom(
+              parsed,
+              args.format,
+              args.maxComponents,
+            );
+            const policyFailed = args.failOnMissing &&
+              normalized.missingRequiredFields.length > 0;
+            const sbom = await context.writeResource(
+              "sbom",
+              `sbom-${Date.now()}`,
+              {
+                format: args.format,
+                specVersion: normalized.specVersion,
+                componentCount: normalized.componentCount,
+                dependencyCount: normalized.dependencyCount,
+                missingRequiredFields: normalized.missingRequiredFields,
+                components: normalized.components,
+                truncated: normalized.truncated,
+                policyStatus: policyFailed ? "failed" : "passed",
+                recordedAt: new Date().toISOString(),
+              },
+            );
+            if (policyFailed) {
+              throw new Error("npm sbom completeness failed policy");
+            }
+            return [sbom, rawHandle];
+          },
+          true,
+        );
+      },
+    },
+    pack: {
+      description:
+        "Preview or produce one bounded npm package tarball without registry mutation",
+      arguments: PackArgsSchema,
+      execute: async (
+        args: z.infer<typeof PackArgsSchema>,
+        context: Context,
+      ) => {
+        const destination = await Deno.makeTempDir({
+          prefix: "swamp-npm-pack-",
+        });
+        const argv = [
+          "pack",
+          "--json",
+          "--pack-destination",
+          destination,
+          ...(context.globalArgs.lifecycleScripts === "deny"
+            ? ["--ignore-scripts"]
+            : []),
+          ...(args.dryRun ? ["--dry-run"] : []),
+          ...workspaceArgv(args),
+        ];
+        try {
+          return await executeWithEvidence(
+            "pack",
+            args.expectedGitHead,
+            args.workspaces,
+            ["npm", ...argv],
+            context,
+            async (prepared, log, evidence) => {
+              const result = await runProcess(
+                "npm",
+                argv,
+                prepared.project.dir,
+                prepared.env,
+                context.globalArgs.defaultTimeoutMs,
+                context.signal,
+                log,
+                prepared.secrets,
+              );
+              evidence.exitCode = result.code;
+              if (result.timedOut) throw new Error("npm pack timed out");
+              if (result.captureTruncated) {
+                throw new Error("npm pack JSON exceeded capture limit");
+              }
+              let parsed: unknown;
+              try {
+                parsed = JSON.parse(result.stdout);
+              } catch {
+                throw new Error(
+                  result.launchError ?? "npm pack did not return valid JSON",
+                );
+              }
+              if (result.code !== 0) {
+                throw new Error(`npm pack exited ${result.code}`);
+              }
+              const entries = z.array(z.object({
+                id: z.string(),
+                name: z.string(),
+                version: z.string(),
+                size: z.number().int().nonnegative(),
+                unpackedSize: z.number().int().nonnegative(),
+                shasum: z.string(),
+                integrity: z.string(),
+                filename: z.string(),
+                entryCount: z.number().int().nonnegative(),
+                bundled: z.array(z.string()).default([]),
+              })).parse(parsed);
+              if (entries.length !== 1) {
+                throw new Error(`npm pack returned ${entries.length} packages`);
+              }
+              const entry = entries[0];
+              if (
+                entry.filename === "." || entry.filename === ".." ||
+                entry.filename.includes("/") || entry.filename.includes("\\")
+              ) {
+                throw new Error(
+                  "npm pack returned an unsafe artifact filename",
+                );
+              }
+              if (!args.dryRun && entry.size > args.maxArtifactBytes) {
+                throw new Error(
+                  `npm pack artifact exceeds ${args.maxArtifactBytes} bytes`,
+                );
+              }
+              const handles: Handle[] = [];
+              let artifactSha256: string | null = null;
+              if (!args.dryRun) {
+                const artifactPath = `${destination}/${entry.filename}`;
+                const artifactStat = await Deno.stat(artifactPath);
+                if (!artifactStat.isFile) {
+                  throw new Error("npm pack artifact is not a regular file");
+                }
+                if (artifactStat.size > args.maxArtifactBytes) {
+                  throw new Error(
+                    `npm pack artifact exceeds ${args.maxArtifactBytes} bytes`,
+                  );
+                }
+                const bytes = await Deno.readFile(artifactPath);
+                if (bytes.length > args.maxArtifactBytes) {
+                  throw new Error(
+                    `npm pack artifact exceeds ${args.maxArtifactBytes} bytes`,
+                  );
+                }
+                artifactSha256 = await sha256(bytes);
+                const writer = context.createFileWriter(
+                  "packageArtifact",
+                  `package-${
+                    entry.name.replaceAll(/[^a-zA-Z0-9._-]/g, "-")
+                  }-${entry.version}-${Date.now()}`,
+                );
+                handles.push(await writer.writeAll(bytes));
+              }
+              const packResult = await context.writeResource(
+                "packResult",
+                `pack-result-${Date.now()}`,
+                {
+                  id: entry.id,
+                  name: entry.name,
+                  version: entry.version,
+                  filename: entry.filename,
+                  size: entry.size,
+                  unpackedSize: entry.unpackedSize,
+                  shasum: entry.shasum,
+                  integrity: entry.integrity,
+                  entryCount: entry.entryCount,
+                  bundled: entry.bundled,
+                  dryRun: args.dryRun,
+                  artifactSha256,
+                  recordedAt: new Date().toISOString(),
+                },
+              );
+              return [packResult, ...handles];
+            },
+          );
+        } finally {
+          await Deno.remove(destination, { recursive: true }).catch(() => {});
+        }
+      },
+    },
+    rebuild: {
+      description:
+        "Run install scripts only for explicitly selected and globally allowed packages",
+      arguments: RebuildArgsSchema,
+      execute: async (
+        args: z.infer<typeof RebuildArgsSchema>,
+        context: Context,
+      ) => {
+        const argv = ["rebuild", ...args.packages, ...workspaceArgv(args)];
+        return await executeWithEvidence(
+          "rebuild",
+          args.expectedGitHead,
+          args.workspaces,
+          ["npm", ...argv],
+          context,
+          async (prepared, log, evidence) => {
+            if (context.globalArgs.allowedRebuildPackages.length === 0) {
+              throw new Error("allowedRebuildPackages must not be empty");
+            }
+            const denied = args.packages.filter((name) =>
+              !context.globalArgs.allowedRebuildPackages.includes(name)
+            );
+            if (denied.length > 0) {
+              throw new Error(
+                `Rebuild package is not allowed: ${denied.join(", ")}`,
+              );
+            }
+            const result = await runProcess(
+              "npm",
+              argv,
+              prepared.project.dir,
+              prepared.env,
+              context.globalArgs.defaultTimeoutMs,
+              context.signal,
+              log,
+              prepared.secrets,
+            );
+            evidence.exitCode = result.code;
+            if (result.timedOut) throw new Error("npm rebuild timed out");
+            if (result.captureTruncated) {
+              throw new Error("npm rebuild output exceeded capture limit");
+            }
+            if (result.code !== 0) {
+              throw new Error(
+                result.launchError || result.stderr.trim() ||
+                  `npm rebuild exited ${result.code}`,
+              );
+            }
+            return [];
+          },
+          true,
+        );
+      },
+    },
+    query: {
+      description:
+        "Record bounded normalized npm dependency selector results and apply count policy",
+      arguments: QueryArgsSchema,
+      execute: async (
+        args: z.infer<typeof QueryArgsSchema>,
+        context: Context,
+      ) => {
+        const argv = ["query", args.selector, "--json"];
+        return await executeWithEvidence(
+          "query",
+          args.expectedGitHead,
+          [],
+          ["npm", ...argv],
+          context,
+          async (prepared, log, evidence) => {
+            const result = await runProcess(
+              "npm",
+              argv,
+              prepared.project.dir,
+              prepared.env,
+              context.globalArgs.defaultTimeoutMs,
+              context.signal,
+              log,
+              prepared.secrets,
+            );
+            evidence.exitCode = result.code;
+            if (result.timedOut) throw new Error("npm query timed out");
+            if (result.captureTruncated) {
+              throw new Error("npm query JSON exceeded capture limit");
+            }
+            const raw = context.createFileWriter(
+              "rawJson",
+              `raw-query-${Date.now()}`,
+            );
+            const rawHandle = await raw.writeText(
+              result.stdout || result.stderr,
+            );
+            let parsed: unknown;
+            try {
+              parsed = JSON.parse(result.stdout);
+            } catch {
+              throw new Error(
+                result.launchError ?? "npm query did not return valid JSON",
+              );
+            }
+            if (result.code !== 0) {
+              throw new Error(`npm query exited ${result.code}`);
+            }
+            const normalized = normalizeQuery(parsed, args.maxResults);
+            const policyFailed =
+              (args.failOnMatches && normalized.matchCount > 0) ||
+              (args.minCount !== undefined &&
+                normalized.matchCount < args.minCount);
+            const queryResult = await context.writeResource(
+              "queryResult",
+              `query-result-${Date.now()}`,
+              {
+                selector: args.selector,
+                matchCount: normalized.matchCount,
+                matches: normalized.matches,
+                truncated: normalized.truncated,
+                policyStatus: policyFailed ? "failed" : "passed",
+                recordedAt: new Date().toISOString(),
+              },
+            );
+            if (policyFailed) {
+              throw new Error("npm query results failed policy");
+            }
+            return [queryResult, rawHandle];
+          },
+          true,
+        );
+      },
+    },
   },
 };
 
@@ -1390,6 +2005,8 @@ export const model = {
 export const testing = {
   normalizeAudit,
   normalizeDependencies,
+  normalizeQuery,
+  normalizeSbom,
   parsePackageJson,
   redact,
   resolveProject,
