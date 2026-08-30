@@ -29,6 +29,12 @@ globalArguments:
   requireCleanGit: true
 ```
 
+## Why Use This
+
+Every method is a typed, evidence-producing operation, not a shell wrapper. Swamp calls `node`, `npm`, and read-only `git` with fixed argv, so the command line is fully reproducible. Every invocation records toolchain, lockfile, package.json, git head, and exit state before the workflow decides to fail or continue.
+
+Use it when you want a deterministic build that an agent can drive without escaping into `command/shell`. Skip it when you need lifecycle scripts, dependency mutation, or registry writes; those are intentionally absent.
+
 ## Toolchain Policy
 
 npm identity comes from `package.json#packageManager` (`npm@<exact-version>`) or
