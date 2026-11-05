@@ -11,6 +11,17 @@ swamp extension pull @funsaized/npm
 swamp model create @funsaized/npm/project my-project
 ```
 
+If installing `2026.08.30.1` failed with `reports.1` / `reports.2` validation
+errors, remove the partial installation and check the registry:
+
+```bash
+swamp extension rm @funsaized/npm
+swamp doctor extensions --json
+```
+
+Reinstall with a release containing this fix; pulling `2026.08.30.1` again
+restores the incompatible report declarations.
+
 Configure the generated model with a repository-relative `projectDir`. Strict
 toolchain mode is enabled by default:
 
@@ -99,6 +110,24 @@ swamp workflow run @funsaized/npm/verify \
 The extension also includes invocation, audit-findings, and SBOM-summary reports
 plus the `swamp-npm` agent skill.
 
+The model type declares report names as strings, as required by Swamp. Audit and
+SBOM reports return `applicable: false` for other methods. To select them only
+for their matching methods, add this alongside `globalArguments` in the model
+definition YAML:
+
+```yaml
+reports:
+  require:
+    - name: "@funsaized/npm/audit-findings"
+      methods: [audit]
+    - name: "@funsaized/npm/sbom-summary"
+      methods: [sbom]
+```
+
+The `{ name, methods }` form belongs in YAML `reports.require`, not in the
+TypeScript model's `reports` array. Required reports are not skipped by CLI
+report filters.
+
 ## Artifacts And Rebuilds
 
 `pack` uses `--ignore-scripts` while lifecycle scripts are denied. A real pack
@@ -171,12 +200,12 @@ mutation, arbitrary execution, or release methods. This excludes `install`,
 
 ## Development
 
+The method tests use Node.js 24 or later and npm 11.19.0, matching the fixtures.
+
 ```bash
-~/.swamp/deno/deno fmt --check project.ts project_test.ts \
-  *_findings.ts *_summary.ts invocation.ts report_shared.ts
-~/.swamp/deno/deno check project.ts project_test.ts \
-  *_findings.ts *_summary.ts invocation.ts report_shared.ts
-~/.swamp/deno/deno test --allow-env --allow-read --allow-write --allow-run project_test.ts
+~/.swamp/deno/deno fmt --check *.ts
+~/.swamp/deno/deno check *.ts
+~/.swamp/deno/deno test --allow-env --allow-read --allow-write --allow-run *_test.ts
 swamp doctor extensions --json
 swamp extension push manifest.yaml --dry-run
 ```

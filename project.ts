@@ -1287,8 +1287,8 @@ export const model = {
   checks: {},
   reports: [
     "@funsaized/npm/invocation",
-    { name: "@funsaized/npm/audit-findings", methods: ["audit"] },
-    { name: "@funsaized/npm/sbom-summary", methods: ["sbom"] },
+    "@funsaized/npm/audit-findings",
+    "@funsaized/npm/sbom-summary",
   ],
   methods: {
     inspect: {
