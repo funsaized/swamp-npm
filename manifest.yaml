@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@funsaized/npm"
-version: "2026.08.30.1"
+version: "2026.11.05.1"
 description: "Typed, reproducible npm project operations"
 repository: "https://github.com/funsaized/swamp-npm"
 

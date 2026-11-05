@@ -1199,7 +1199,7 @@ async function executeWithEvidence(
 /** npm project model. */
 export const model = {
   type: "@funsaized/npm/project",
-  version: "2026.08.30.1",
+  version: "2026.11.05.1",
   upgrades: [
     {
       toVersion: "2026.08.26.2",
@@ -1214,6 +1214,11 @@ export const model = {
     {
       toVersion: "2026.08.30.1",
       description: "Add delivery evidence methods and reports",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.11.05.1",
+      description: "Fix report declarations, no schema changes",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],
